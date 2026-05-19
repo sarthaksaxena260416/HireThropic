@@ -1,7 +1,7 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import Groq from 'groq-sdk';
 import Session from '../models/Session.model.js';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const SYSTEM_PROMPTS = {
   dsa: `You are a senior software engineer conducting a Data Structures & Algorithms interview.
@@ -59,10 +59,9 @@ export const chat = async (req, res, next) => {
 
     session.messages.push({ role: 'user', content: userMessage });
 
-    // Build chat history for Gemini
-    const history = session.messages.slice(-20).slice(0, -1).map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
+    const recentMessages = session.messages.slice(-20).map((m) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content,
     }));
 
     res.setHeader('Content-Type', 'text/event-stream');
@@ -70,18 +69,20 @@ export const chat = async (req, res, next) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash-lite',
-      systemInstruction: SYSTEM_PROMPTS[session.topic] + `\n\nDifficulty: ${session.difficulty}.`,
-    });
-
-    const chat = model.startChat({ history });
-    const result = await chat.sendMessageStream(userMessage);
-
     let fullResponse = '';
 
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
+    const stream = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPTS[session.topic] + `\n\nDifficulty: ${session.difficulty}.` },
+        ...recentMessages,
+      ],
+      stream: true,
+      max_tokens: 1024,
+    });
+
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content || '';
       if (text) {
         fullResponse += text;
         res.write(`data: ${JSON.stringify({ text })}\n\n`);
@@ -122,9 +123,13 @@ export const evaluateSession = async (req, res, next) => {
       .map((m) => `${m.role === 'user' ? 'Candidate' : 'Interviewer'}: ${m.content}`)
       .join('\n\n');
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite', });
-
-    const result = await model.generateContent(`You evaluated a ${session.topic} interview (difficulty: ${session.difficulty}).
+    const result = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: `You evaluated a ${session.topic} interview (difficulty: ${session.difficulty}).
 
 Transcript:
 ${transcript}
@@ -135,9 +140,12 @@ Provide a JSON evaluation with ONLY these fields (no other text, no markdown):
   "feedback": "<2-3 sentence overall summary>",
   "strengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
   "improvements": ["<area 1>", "<area 2>", "<area 3>"]
-}`);
+}`,
+        },
+      ],
+    });
 
-    const raw = result.response.text();
+    const raw = result.choices[0].message.content;
     let evaluation;
     try {
       evaluation = JSON.parse(raw.replace(/```json|```/g, '').trim());
