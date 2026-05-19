@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 5000;
 connectDB();
 
 app.use(cors({
-  origin: ['http://localhost:5173', 'https://hirethropic.vercel.app'],
+  origin: ['http://localhost:5173', 'https://hire-thropic.vercel.app'],
   credentials: true,
 }));
 
